@@ -1,0 +1,1087 @@
+---
+title: "Softening2"
+author: "Tarrik Quneibi"
+date: "7/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE, message=FALSE,fig.width=11, fig.height=7)
+```
+
+``` {r libraries}
+
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(ggforce)
+library(tidyquant)
+library(patchwork)
+library(gridBase)
+library(cowplot)
+```
+
+Importing the data and reading the fike to a variable.
+
+```{r data import}
+##setwd("`/R code/softening/")
+softening_file <- list.files(pattern = "2010")
+file <- read.csv(softening_file)
+
+
+```
+
+
+This section cleans the data. Removes all NAs and empty cells. Converts all columns to their correct class. Combines the duplicate columns for hardness, calcium, and magnesium. Converts the calcium and magnesium columns to units of CaCO3. Removes all duplicate columns.
+
+```{r Clean up}
+file[is.na(file)] <- 0
+file[file==""]<- 0
+
+file[,4:35] <- sapply(file[,4:ncol(file)],as.numeric)
+file[is.na(file)] <- 0
+file$Collection.Date.Time <- as.POSIXct(file$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+scada_data <- subset(file, subset = Location.description %in% c("Drinking Water SCADA Data"))
+Flow_data <- cbind.data.frame(scada_data$Collection.Date.Time, scada_data$FLOW_SCADA_PLANT1_RIVER)
+Flow_data <- cbind.data.frame(Flow_data, scada_data$FLOW_SCADA_PLANT1_WELL)
+Flow_data <- cbind.data.frame(Flow_data,scada_data$FLOW_SCADA_PLANT2_RIVER)
+Flow_data <- cbind.data.frame(Flow_data, scada_data$FLOW_SCADA_PLANT2_WELL)
+colnames(Flow_data) <- c("Collection.Date.Time", "Plant 1 river", "Plant 1 well", "Plant 2 river", "Plant 2 well")
+Flow_data$Total.Flow <- Flow_data$`Plant 1 river`+ Flow_data$`Plant 1 well` + Flow_data$`Plant 2 river` + Flow_data$`Plant 2 well`
+
+file$Hardness <- file$X.DW_APC_SUB_Total.Hardness.by.2340B + file$HARDNESS
+file$Calcium <- file$X.DW_APC_SUB_Calcium + file$CALCIUM+file$CHEM_SCADA_CA
+file$Magnesium <- file$X.DW_APC_SUB_Magnesium + file$MAGNESIUM
+file$Lime <- file$CHEM_SCADA_LIME_VA1 + file$CHEM_SCADA_LIME_VA2 + file$CHEM_SCADA_LIME_VA3 + file$CHEM_SCADA_LIME_VA4 + file$CHEM_SCADA_LIME_VA5
+file <- left_join(file, Flow_data, by = "Collection.Date.Time")
+file$Lime <- (file$Lime/(file$Total.Flow*8.34))
+file$Calcium <- file$Calcium*2.48892
+file$Magnesium <- file$Magnesium*4.11438
+
+file$X.DW_APC_SUB_Total.Hardness.by.2340B <- NULL
+file$HARDNESS <- NULL
+file$X.DW_APC_SUB_Calcium <- NULL
+file$CALCIUM <- NULL
+file$CHEM_SCADA_CA <- NULL
+file$X.DW_APC_SUB_Magnesium <- NULL
+file$MAGNESIUM <- NULL
+file$CHEM_SCADA_LIME_VA1 <-NULL
+file$CHEM_SCADA_LIME_VA2 <-NULL
+file$CHEM_SCADA_LIME_VA3 <-NULL
+file$CHEM_SCADA_LIME_VA4 <-NULL
+file$CHEM_SCADA_LIME_VA5 <-NULL
+
+```
+This chunk removes all extreme outliers from the pH and hardness data. anything aboce a pH of 14 and any hardness above 1000 mg/l CaCO3 are removed.
+
+```{r cleaning pH and hardness columns}
+i=0
+
+##file[is.na(file)] <- 0
+##file$Collection.Date.Time <- as.POSIXct(file$Collection.Date.Time, format="%m/%d/%Y %H:%M")
+for (row in 1:nrow(file)) {
+    Mag <- file[row, "Magnesium"]
+    Date  <- as.POSIXct(file[row, "Collection.Date.Time"])
+
+    if(Date <= as.POSIXct("2020-10-21 03:00:00")) {
+       file[row, "Magnesium"] <- (file[row, "Magnesium"])/2.03204
+    }
+}
+
+for (PH in file$PH){
+  i=i+1
+  if (PH > 14) {
+    file$PH[i] <- NA
+  ##file$PH[i] <- 0
+  }
+}
+
+i=0
+for (Hardness in file$Hardness){
+  i=i+1
+  if (Hardness > 1000){
+    file$Hardness[i] <- NA
+}
+}
+```
+
+```{r getting weighted raw data}
+scada_data <- subset(file, subset = Location.description %in% c("Drinking Water SCADA Data"))
+raw_river <- subset(file, subset = Location.description %in% c("WTP Raw River"))
+raw_well <- subset(file, subset = Location.description %in% c("WTP Raw Well  Combined"))
+
+weighted <- left_join(raw_river, raw_well, by = "Collection.Date.Time")
+weighted$Collection.Date.Time <- as.Date(weighted$Collection.Date.Time)
+weighted <- left_join(weighted, Flow_data, by = "Collection.Date.Time")
+weighted$Total.Hardness <- (weighted$Hardness.x*weighted$`Plant 1 river`+weighted$Hardness.x*weighted$`Plant 2 river`+weighted$Hardness.y*weighted$`Plant 1 well`+weighted$Hardness.y*weighted$`Plant 2 well`)/weighted$Total.Flow 
+weighted$Total.Calcium <- (weighted$Calcium.x*weighted$`Plant 1 river`+weighted$Calcium.x*weighted$`Plant 2 river`+weighted$Calcium.y*weighted$`Plant 1 well`+weighted$Calcium.y*weighted$`Plant 2 well`)/weighted$Total.Flow 
+weighted$Total.Magnesium <- (weighted$Magnesium.x*weighted$`Plant 1 river`+weighted$Magnesium.x*weighted$`Plant 2 river`+weighted$Magnesium.y*weighted$`Plant 1 well`+weighted$Magnesium.y*weighted$`Plant 2 well`)/weighted$Total.Flow 
+weighted$pH <- (weighted$PH.x*weighted$`Plant 1 river`+weighted$PH.x*weighted$`Plant 2 river`+weighted$PH.y*weighted$`Plant 1 well`+weighted$PH.y*weighted$`Plant 2 well`)/weighted$Total.Flow
+
+raw_water <- weighted[, c("Collection.Date.Time", "Total.Hardness", "Total.Calcium", "Total.Magnesium", "pH")]
+
+```
+
+#Organizes the full data set into seperate dataframes based on the loccation. Converts all date columns to date time class.
+
+```{r organizing location bins}
+basin2 <- data.frame()
+basin3 <- data.frame()
+basin4 <- data.frame()
+basin5 <- data.frame()
+reservoir <- data.frame()
+
+basin2 <- subset(file, subset = Location.description %in% c("WTP Plant1 Basin2"))
+basin3 <- subset(file, subset = Location.description %in% c("WTP Plant1 Basin3" ))
+basin4 <- subset(file, subset = Location.description %in% c("WTP Plant2 Basin4"))
+basin5 <- subset(file, subset = Location.description %in% c("WTP Plant2 Basin5"))
+reservoir <- subset(file, subset = Location.description %in% c("WTP Main Reservoir"))
+
+basin2$Location.description <- "Basin2"
+basin3$Location.description <- "Basin3"
+basin4$Location.description <- "Basin4"
+basin5$Location.description <- "Basin5"
+reservoir$Location.description <- "Reservoir"
+basin2$Collection.Date.Time <- as.POSIXct(basin2$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+basin3$Collection.Date.Time <- as.POSIXct(basin3$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+basin4$Collection.Date.Time <- as.POSIXct(basin4$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+basin5$Collection.Date.Time <- as.POSIXct(basin5$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+reservoir$Collection.Date.Time <- as.POSIXct(reservoir$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+```
+
+#The chunk below has the data for the subset of the river alk<190. 
+```{r subset for alk under 190}
+river_alk <- subset(file, subset = Location.description %in% c("WTP Raw River"))
+file.alk.b190 <- subset(river_alk, ALK_TOTAL < 190)
+color_river <- subset(file, subset = Location.description %in% c("WTP Raw River"))
+color_river$COLOR <- as.numeric(color_river$COLOR)
+color_river <- cbind.data.frame(color_river$Collection.Date.Time, color_river$COLOR)
+colnames(color_river) <- c("Collection.Date.Time", "COLOR")
+river_alk$Collection.Date.Time <- as.POSIXct(river_alk$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+color_river$Collection.Date.Time <- as.POSIXct(color_river$Collection.Date.Time,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+
+alk_color <- left_join(river_alk, color_river, by = "Collection.Date.Time")
+
+ggplot() + 
+    geom_point(data = alk_color, aes(x=COLOR.x, y = ALK_TOTAL, color='River Alk')) +
+    scale_colour_manual("", 
+                      breaks = c("River Alk"),
+                      values = c("blue")) +
+   ggtitle("Alkalinity against river color")
+
+ggplot() + 
+    geom_point(data = river_alk, aes(x=Collection.Date.Time, y = ALK_TOTAL, color='River Alk')) +
+    geom_point(data = color_river, aes(x=Collection.Date.Time, y = COLOR, color='River color')) +
+    scale_colour_manual("", 
+                      breaks = c("River Alk", "River color"),
+                      values = c("blue", "red")) +
+   ggtitle("Alkalinity against river color over time")+
+  ylim(5,190)
+
+```
+The chunk below will have the data that is subset for the river alk<190 and river color>45. Each plot is broken up by the pound sign do that the plots dont get mixed up.
+
+```{r subset for color above 45}
+
+river_alk <- subset(file, subset = Location.description %in% c("WTP Raw River"))
+river_alk <- subset(river_alk, ALK_TOTAL < 190)
+river_alk <- subset(river_alk, COLOR >45)
+colnames(river_alk)[3] <- "Date"
+river_alk$Date <- as.Date(river_alk$Date)
+reservoir_diff <- cbind.data.frame(as.Date(reservoir$Collection.Date.Time, format = "%m/%d/%Y") ,reservoir$Hardness)
+colnames(reservoir_diff) <- c("Date", "Hardness_Res")
+Alk <- cbind.data.frame(as.Date(reservoir$Collection.Date.Time, format = "%m/%d/%Y") , reservoir$ALK_TOTAL)
+colnames(Alk) <- c("Date", "Alkalinity") 
+raw_diff <- cbind.data.frame(as.Date(raw_water$Collection.Date.Time, format = "%m/%d/%Y") , raw_water$Total.Hardness)
+colnames(raw_diff) <- c("Date", "Hardness_Raw")
+Lime <- cbind.data.frame(as.Date(scada_data$Collection.Date.Time, format = "%m/%d/%Y") , scada_data$Lime)
+colnames(Lime) <- c("Date", "Lime")
+Color <- cbind.data.frame(as.Date(reservoir$Collection.Date.Time, format = "%m/%d/%Y") , reservoir$COLOR)
+colnames(Color) <- c("Date", "Color") 
+basin_2diff <- cbind.data.frame(as.Date(basin2$Collection.Date.Time, format = "%m/%d/%Y") ,basin2$Hardness)
+colnames(basin_2diff) <- c("Date", "Hardness_B2")
+basin_3diff<- cbind.data.frame(as.Date(basin3$Collection.Date.Time, format = "%m/%d/%Y") ,basin3$Hardness)
+colnames(basin_3diff) <- c("Date", "Hardness_B3")
+basin_4diff<- cbind.data.frame(as.Date(basin4$Collection.Date.Time, format = "%m/%d/%Y") ,basin4$Hardness)
+colnames(basin_4diff) <- c("Date", "Hardness_B4")
+basin_5diff<- cbind.data.frame(as.Date(basin5$Collection.Date.Time, format = "%m/%d/%Y") ,basin5$Hardness)
+colnames(basin_5diff) <- c("Date", "Hardness_B5")
+
+###################################################################################################################################
+data<- left_join(river_alk, reservoir_diff, by = "Date")
+data1 <- left_join(data, raw_diff, by = "Date")
+data2 <- left_join(data1, Lime, by = "Date")
+data2$Difference <- data2$Hardness_Raw - data2$Hardness_Res
+data2 <- data2[data2$ALK_TOTAL != 0, ]
+data2 <- data2[data2$Hardness_Raw != 0, ]
+data2$Date <- as.POSIXct(data2$Date)
+
+ggplot() + 
+    geom_point(data = data2, aes(x=Lime.y, y = Difference, color='Raw - Reservoir')) +
+    geom_point(data = data2, aes(x=Lime.y, y = Hardness_Res, color='Reservoir hardness')) +
+    scale_colour_manual("", 
+                      breaks = c("Raw - Reservoir", "Reservoir hardness"),
+                      values = c("purple", "green")) +
+   ggtitle("Total hardness removal and reservoir hardness against Lime addition")+
+  xlab("Lime dose (ppm)")+
+  scale_y_continuous(
+    "Hardness removal (raw - reservoir) in mg/L", 
+    sec.axis = sec_axis(~ . /1, name = "Reservoir hardness mg/l as CaCO3"))+
+      theme(axis.text.y.right = element_text(color = "green"))
+  
+
+###############################################################################################################################
+data3 <- left_join(river_alk, Color, by = "Date")
+data3 <- left_join(data3, Lime, by = "Date")
+data3 <- data3[data3$ALK_TOTAL != 0, ]
+data3$Date <- as.POSIXct(data3$Date)
+
+
+ggplot() + 
+    geom_point(data = data3, aes(x=Color, y = Lime.y, color='Lime dose')) +
+    scale_colour_manual("", 
+                      breaks = c("Lime dose"),
+                      values = c("purple")) +
+   ggtitle("Lime dose against reservoir water color")+
+  xlab("Color")+
+  ylab("Lime dose (ppm)")
+
+################################################################################################################################
+data4 <- left_join(river_alk, Alk, by = "Date")
+data4 <- left_join(data4, Lime, by = "Date")
+data4 <- data4[data4$ALK_TOTAL != 0, ]
+data4$Date <- as.POSIXct(data4$Date)
+
+ggplot() + 
+    geom_point(data = data4, aes(x=Lime.y, y = Alkalinity, color='Alkalinity')) +
+    scale_colour_manual("", 
+                      breaks = c("Alkalinity"),
+                      values = c("blue")) +
+   ggtitle("Lime dose against reservoir alkalinity")+
+  xlab("Lime dose (ppm)")+
+  ylab("Alkalinity (mg/l CaCO3)")+
+ylim(5,130)
+
+################################################################################################################################
+basin4_5 <- left_join(river_alk, basin_4diff, by = "Date")
+basin4_5 <- left_join(basin4_5, basin_5diff, by = "Date")
+basinR_4 <- left_join(river_alk, basin_4diff, by = "Date")
+basinR_4 <- left_join(basinR_4, raw_diff, by = "Date")
+basinR_4 <- basinR_4[basinR_4$Hardness_Raw != 0, ]
+basin4_5$Difference <- basin4_5$Hardness_B4 - basin4_5$Hardness_B5
+basinR_4$Difference <- basinR_4$Hardness_Raw - basinR_4$Hardness_B4
+
+basin4_5$Date <- as.POSIXct(basin4_5$Date)
+basinR_4$Date <- as.POSIXct(basinR_4$Date)
+
+ ggplot() + 
+     geom_point(data = data4, aes(x=Date, y = Alkalinity, color='Reservoir alkalinity')) +
+     geom_point(data = data3, aes(x=Date, y = Color*200, color='Reservoir Color')) +
+     geom_point(data = data2, aes(x=Date, y = Difference, color='Raw - Reservoir')) +
+     geom_point(data = data4, aes(x=Date, y = Lime.y, color='Lime')) +
+     geom_point(data = basin4_5, aes(x=Date, y = Difference, color='Basin 4 - Basin 5')) +
+     geom_point(data = basinR_4, aes(x=Date, y = Difference, color='Raw - Basin 4')) +
+    scale_colour_manual("", 
+                      breaks = c("Reservoir alkalinity", "Reservoir Color", "Raw - Reservoir", "Lime", "Basin 4 - Basin 5", "Raw - Basin 4"),
+                      values = c("blue", "purple", "green", "red","orange", "yellow")) +
+   ggtitle("Lime dose, alkalinity, color, and hardness difference over time")+
+  xlab("Date")+
+  scale_y_continuous(
+    "mg/l CaCO3", 
+    sec.axis = sec_axis(~ . /200, name = "Color"))+
+      theme(axis.text.y.right = element_text(color = "purple"))+
+  scale_x_datetime(date_breaks = "6 months")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ #############################################################################################for the first event
+  ggplot() + 
+     geom_point(data = data4, aes(x=Date, y = Alkalinity, color='Reservoir alkalinity')) +
+     geom_point(data = data3, aes(x=Date, y = Color*200, color='Reservoir Color')) +
+     geom_point(data = data2, aes(x=Date, y = Difference, color='Raw - Reservoir')) +
+     geom_point(data = data4, aes(x=Date, y = Lime.y, color='Lime')) +
+     geom_point(data = basin4_5, aes(x=Date, y = Difference, color='Basin 4 - Basin 5')) +
+     geom_point(data = basinR_4, aes(x=Date, y = Difference, color='Raw - Basin 4')) +
+    scale_colour_manual("", 
+                      breaks = c("Reservoir alkalinity", "Reservoir Color", "Raw - Reservoir", "Lime", "Basin 4 - Basin 5", "Raw - Basin 4"),
+                      values = c("blue", "purple", "green", "red","orange", "yellow")) +
+   ggtitle("Lime dose, alkalinity, color, and hardness difference for the first event")+
+  xlab("Date")+
+  scale_y_continuous(
+    "mg/l CaCO3", 
+    sec.axis = sec_axis(~ . /200, name = "Color"))+
+      theme(axis.text.y.right = element_text(color = "purple"))+
+  scale_x_datetime(date_breaks = "6 months")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+ xlim(as.POSIXct('2015-06-01'),as.POSIXct('2015-07-01'))
+ #############################################################################################for the second event
+  ggplot() + 
+     geom_point(data = data4, aes(x=Date, y = Alkalinity, color='Reservoir alkalinity')) +
+     geom_point(data = data3, aes(x=Date, y = Color*200, color='Reservoir Color')) +
+     geom_point(data = data2, aes(x=Date, y = Difference, color='Raw - Reservoir')) +
+     geom_point(data = data4, aes(x=Date, y = Lime.y, color='Lime')) +
+     geom_point(data = basin4_5, aes(x=Date, y = Difference, color='Basin 4 - Basin 5')) +
+     geom_point(data = basinR_4, aes(x=Date, y = Difference, color='Raw - Basin 4')) +
+    scale_colour_manual("", 
+                      breaks = c("Reservoir alkalinity", "Reservoir Color", "Raw - Reservoir", "Lime", "Basin 4 - Basin 5", "Raw - Basin 4"),
+                      values = c("blue", "purple", "green", "red","orange", "yellow")) +
+   ggtitle("Lime dose, alkalinity, color, and hardness difference for the second event")+
+  xlab("Date")+
+  scale_y_continuous(
+    "mg/l CaCO3", 
+    sec.axis = sec_axis(~ . /200, name = "Color"))+
+      theme(axis.text.y.right = element_text(color = "purple"))+
+  scale_x_datetime(date_breaks = "6 months")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+ xlim(as.POSIXct('2016-08-01'),as.POSIXct('2016-09-01'))
+ ###############################################################################################for the third event
+  ggplot() + 
+     geom_point(data = data4, aes(x=Date, y = Alkalinity, color='Reservoir alkalinity')) +
+     geom_point(data = data3, aes(x=Date, y = Color*200, color='Reservoir Color')) +
+     geom_point(data = data2, aes(x=Date, y = Difference, color='Raw - Reservoir')) +
+     geom_point(data = data4, aes(x=Date, y = Lime.y, color='Lime')) +
+     geom_point(data = basin4_5, aes(x=Date, y = Difference, color='Basin 4 - Basin 5')) +
+     geom_point(data = basinR_4, aes(x=Date, y = Difference, color='Raw - Basin 4')) +
+    scale_colour_manual("", 
+                      breaks = c("Reservoir alkalinity", "Reservoir Color", "Raw - Reservoir", "Lime", "Basin 4 - Basin 5", "Raw - Basin 4"),
+                      values = c("blue", "purple", "green", "red","orange", "yellow")) +
+   ggtitle("Lime dose, alkalinity, color, and hardness difference for the third event")+
+  xlab("Date")+
+  scale_y_continuous(
+    "mg/l CaCO3", 
+    sec.axis = sec_axis(~ . /200, name = "Color"))+
+      theme(axis.text.y.right = element_text(color = "purple"))+
+  scale_x_datetime(date_breaks = "6 months")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+ xlim(as.POSIXct('2018-02-01'),as.POSIXct('2018-04-01'))
+ ###############################################################################################for the fourth event
+  ggplot() + 
+     geom_point(data = data4, aes(x=Date, y = Alkalinity, color='Reservoir alkalinity')) +
+     geom_point(data = data3, aes(x=Date, y = Color*200, color='Reservoir Color')) +
+     geom_point(data = data2, aes(x=Date, y = Difference, color='Raw - Reservoir')) +
+     geom_point(data = data4, aes(x=Date, y = Lime.y, color='Lime')) +
+     geom_point(data = basin4_5, aes(x=Date, y = Difference, color='Basin 4 - Basin 5')) +
+     geom_point(data = basinR_4, aes(x=Date, y = Difference, color='Raw - Basin 4')) +
+    scale_colour_manual("", 
+                      breaks = c("Reservoir alkalinity", "Reservoir Color", "Raw - Reservoir", "Lime", "Basin 4 - Basin 5", "Raw - Basin 4"),
+                      values = c("blue", "purple", "green", "red","orange", "yellow")) +
+   ggtitle("Lime dose, alkalinity, color, and hardness difference for the fourth event")+
+  xlab("Date")+
+  scale_y_continuous(
+    "mg/l CaCO3", 
+    sec.axis = sec_axis(~ . /200, name = "Color"))+
+      theme(axis.text.y.right = element_text(color = "purple"))+
+  scale_x_datetime(date_breaks = "6 months")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+ xlim(as.POSIXct('2020-01-01'),as.POSIXct('2020-02-01'))
+ #############################################################################################for the fifth event
+  ggplot() + 
+     geom_point(data = data4, aes(x=Date, y = Alkalinity, color='Reservoir alkalinity')) +
+     geom_point(data = data3, aes(x=Date, y = Color*200, color='Reservoir Color')) +
+     geom_point(data = data2, aes(x=Date, y = Difference, color='Raw - Reservoir')) +
+     geom_point(data = data4, aes(x=Date, y = Lime.y, color='Lime')) +
+     geom_point(data = basin4_5, aes(x=Date, y = Difference, color='Basin 4 - Basin 5')) +
+     geom_point(data = basinR_4, aes(x=Date, y = Difference, color='Raw - Basin 4')) +
+    scale_colour_manual("", 
+                      breaks = c("Reservoir alkalinity", "Reservoir Color", "Raw - Reservoir", "Lime", "Basin 4 - Basin 5", "Raw - Basin 4"),
+                      values = c("blue", "purple", "green", "red","orange", "yellow")) +
+   ggtitle("Lime dose, alkalinity, color, and hardness difference for the fifth event")+
+  xlab("Date")+
+  scale_y_continuous(
+    "mg/l CaCO3", 
+    sec.axis = sec_axis(~ . /200, name = "Color"))+
+      theme(axis.text.y.right = element_text(color = "purple"))+
+  scale_x_datetime(date_breaks = "6 months")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+ xlim(as.POSIXct('2020-03-01'),as.POSIXct('2020-04-01'))
+ ###########################################################################################for the sixth event
+  ggplot() + 
+     geom_point(data = data4, aes(x=Date, y = Alkalinity, color='Reservoir alkalinity')) +
+     geom_point(data = data3, aes(x=Date, y = Color*200, color='Reservoir Color')) +
+     geom_point(data = data2, aes(x=Date, y = Difference, color='Raw - Reservoir')) +
+     geom_point(data = data4, aes(x=Date, y = Lime.y, color='Lime')) +
+     geom_point(data = basin4_5, aes(x=Date, y = Difference, color='Basin 4 - Basin 5')) +
+     geom_point(data = basinR_4, aes(x=Date, y = Difference, color='Raw - Basin 4')) +
+    scale_colour_manual("", 
+                      breaks = c("Reservoir alkalinity", "Reservoir Color", "Raw - Reservoir", "Lime", "Basin 4 - Basin 5", "Raw - Basin 4"),
+                      values = c("blue", "purple", "green", "red","orange", "yellow")) +
+   ggtitle("Lime dose, alkalinity, color, and hardness difference for the sixth event")+
+  xlab("Date")+
+  scale_y_continuous(
+    "mg/l CaCO3", 
+    sec.axis = sec_axis(~ . /200, name = "Color"))+
+      theme(axis.text.y.right = element_text(color = "purple"))+
+  scale_x_datetime(date_breaks = "6 months")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+ xlim(as.POSIXct('2021-06-01'),as.POSIXct('2021-07-01'))
+
+```
+
+This plots the hardness of all basins over time.
+
+```{r scatter plotting hardness}
+ggplot() + 
+    geom_point(data = basin2, aes(x=PH, y = Hardness, color='Basin 2')) +
+    geom_point(data = basin3, aes(x=PH, y = Hardness, color='Basin 3')) +
+    geom_point(data = basin4, aes(x=PH, y = Hardness, color='Basin 4')) +
+    geom_point(data = basin5, aes(x=PH, y = Hardness, color='Basin 5')) +
+    scale_colour_manual("", 
+                      breaks = c("Basin 2", "Basin 3", "Basin 4", "Basin 5"),
+                      values = c("red", "green", "purple", "blue")) +
+   ggtitle("Hardness against pH")+
+   xlim(7.5 , 12.5)+
+   ylim(50, 300)
+#############################################################################################
+Basin_4 <- cbind.data.frame(as.Date(basin4$Collection.Date.Time, format = "%m/%d/%Y"), basin4$PH)
+colnames(Basin_4) <- c("Date", "pH_B4")
+Basin_5 <- cbind.data.frame(as.Date(basin5$Collection.Date.Time, format = "%m/%d/%Y"), basin5$Hardness)
+colnames(Basin_5) <- c("Date", "Hardness_B5")
+Raw <- cbind.data.frame(as.POSIXct(raw_water$Collection.Date.Time,format = "%m/%d/%Y"), raw_water$Total.Hardness)
+colnames(Raw) <- c("Date", "Hardness_R")
+
+data1 <- left_join(Basin_5, Raw, by = "Date")
+data1 <- left_join(data1, Basin_4, by= "Date")
+data1[data1 == 0] <- NA
+data1 <- data1[complete.cases(data1), ]
+
+data1$Difference <- data1$Hardness_R - data1$Hardness_B5
+#############################################################################################
+plot1<-  ggplot() + 
+  geom_point(data = data1, aes(x = Date, y = Difference, color = "Raw - Basin 5")) +
+  scale_colour_manual("", 
+                      breaks = c("Raw - Basin 5"),
+                      values = c("red")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ggtitle('Differences of hardness')+
+  ylim(100, 300)
+
+
+plot2<- ggplot() + 
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = PH, color = "Basin 4")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4"),
+                      values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') +
+  ylab('pH')+
+  ylim(9,12.5)+
+  ggtitle('pH over time')+
+  scale_x_datetime(date_breaks = "3 months")
+
+plot1/plot2
+################################################################################################
+ggplot() + 
+    geom_point(data = data1, aes(x=pH_B4, y = Difference, color='Raw - Basin 5')) +
+    scale_colour_manual("", 
+                      breaks = c("Raw - Basin 5"),
+                      values = c("blue")) +
+   ggtitle("Difference of Hardness against pH")+
+   xlab("Basin 4 pH")+
+   ylab("Hardness")
+
+```
+
+This plots all locations magnesium and calium concentrations against the pH. The last section plots the magnesium removed by basins 2 and 4 against their respective pH.
+
+```{r scatter plot Ca and Mg against pH}
+
+ ggplot() + 
+    geom_point(data = basin2, aes(x=PH, y = Calcium, color='Basin 2')) +
+    geom_point(data = basin3, aes(x=PH, y = Calcium, color='Basin 3')) +
+    geom_point(data = basin4, aes(x=PH, y = Calcium, color='Basin 4')) +
+    geom_point(data = basin5, aes(x=PH, y = Calcium, color='Basin 5')) +
+    geom_point(data = reservoir, aes(x=PH, y = Calcium, color='Reservoir')) +
+    geom_point(data = raw_water, aes(x=PH, y = Total.Calcium, color='Raw')) +
+    scale_colour_manual("", 
+                      breaks = c("Basin 2", "Basin 3", "Basin 4", "Basin 5", "Raw", "Reservoir"),
+                      values = c("red", "green", "blue", "purple", "orange", "yellow")) +
+   ggtitle("Calcium against pH")+
+   xlim(7, 12.5)+
+   ylim(5, 400)
+
+ggplot() + 
+    geom_point(data = basin2, aes(x=PH, y = Magnesium, color='Basin 2'), alpha=0.5) +
+    geom_point(data = basin3, aes(x=PH, y = Magnesium, color='Basin 3'), alpha=0.5) +
+    geom_point(data = basin4, aes(x=PH, y = Magnesium, color='Basin 4'), alpha=0.5) +
+    geom_point(data = basin5, aes(x=PH, y = Magnesium, color='Basin 5'), alpha=0.5) +
+    geom_point(data = reservoir, aes(x=PH, y = Magnesium, color='Reservoir')) +
+    geom_point(data = raw_water, aes(x=PH, y = Total.Magnesium, color='Raw')) +
+    scale_colour_manual("", 
+                      breaks = c("Basin 2", "Basin 3", "Basin 4", "Basin 5", "Raw", "Reservoir"),
+                      values = c("red", "green", "blue", "purple", "orange", "yellow")) +
+   ggtitle("Magnesium against pH")+
+   xlim(7, 12.5)+
+   ylim(5,300)
+################################################################################################
+Basin_2 <- cbind.data.frame(as.Date(basin2$Collection.Date.Time, format = "%m/%d/%Y %H:%M") , basin2$Magnesium)
+Basin_2 <- cbind.data.frame(Basin_2 , basin2$PH)
+colnames(Basin_2) <- c("Date", "Magnesium_B2", "pH_B2")
+
+Basin_4 <- cbind.data.frame(as.Date(basin4$Collection.Date.Time, format = "%m/%d/%Y %H:%M"), basin4$Magnesium)
+Basin_4 <- cbind.data.frame(Basin_4 , basin4$PH)
+colnames(Basin_4) <- c("Date", "Magnesium_B4","pH_B4")
+
+Raw <- cbind.data.frame(as.POSIXct(raw_water$Collection.Date.Time,format = "%m/%d/%Y %H:%M"), raw_water$Total.Magnesium)
+Raw <- cbind.data.frame(Raw , raw_water$pH)
+colnames(Raw) <- c("Date", "Magnesium_R", "pH_R")
+
+data1 <- left_join(Basin_2, Raw, by = "Date")
+data2 <- left_join(Basin_4, Raw, by = "Date")
+data1[data1 == 0] <- NA
+data2[data2 == 0] <- NA
+
+data1 <- data1[complete.cases(data1), ]
+data2 <- data2[complete.cases(data2), ]
+
+data1$Difference <- data1$Magnesium_R - data1$Magnesium_B2
+data2$Difference <- data2$Magnesium_R - data2$Magnesium_B4
+################################################################################################
+ ggplot() + 
+  geom_point(data = data1, aes(x = pH_B2, y = Difference, color = "Raw - Basin 2")) +
+  geom_point(data = data2, aes(x = pH_B4, y = Difference, color = "Raw - Basin 4")) +
+  scale_colour_manual("", 
+                      breaks = c("Raw - Basin 2", "Raw - Basin 4"),
+                      values = c("red", "green"))+
+  xlab('pH') +
+  ylab('Magnesium (mg/l CaCO3')+
+  ggtitle('Differences of Magnesium')
+################################################################################################
+
+```
+
+This plots a boxplot of the calcium and magnesium concentrations separated by location.
+
+```{r boxplot of Ca and Mg}
+all_data <- bind_rows(basin2, basin3)
+all_data <- bind_rows(all_data, basin4)
+all_data <- bind_rows(all_data, basin5)
+all_data <- bind_rows(all_data, raw_water)
+data <- data.frame()
+data <- cbind(all_data$Location.description, all_data$Collection.Date.Time)
+data <- cbind(data, all_data$Calcium)
+data <- cbind(data, all_data$Magnesium)
+data <- as.data.frame(data)
+colnames(data) <- c("Location", "Date", "Calcium", "Magnesium")
+data$Location <- as.factor(data$Location)
+data$Calcium <- as.numeric(data$Calcium)
+data$Magnesium <- as.numeric(data$Magnesium)
+data$Date <- as.POSIXct(data$Date,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+data[data == 0] <- NA
+
+boxplot(data$Calcium~data$Location, col=rainbow(4),
+        main = "Calcium concentration at each location in the treatment train",
+           xlab = "Location",
+           ylab = "Calcium (mg/l CaCO3)")
+boxplot(data$Magnesium~data$Location, col=rainbow(4),
+        main = "Magnesium concentration at each location in the treatment train",
+           xlab = "Location",
+           ylab = "Magnesium (mg/l CaCO3)")
+```
+
+This plots a boxplot of the hardness at each location.
+
+```{r box plot of hardness}
+all_data <- bind_rows(basin2, basin3)
+all_data <- bind_rows(all_data, basin4)
+all_data <- bind_rows(all_data, basin5)
+all_data <- bind_rows(all_data, raw_water)
+data <- data.frame()
+data <- cbind(all_data$Location.description, all_data$Collection.Date.Time)
+data <- cbind(data, all_data$Hardness)
+data <- as.data.frame(data)
+colnames(data) <- c("Location", "Date", "Hardness")
+data$Location <- as.factor(data$Location)
+data$Hardness <- as.numeric(data$Hardness)
+data$Date <- as.POSIXct(data$Date,format="%m/%d/%Y %H:%M",tz=Sys.timezone())
+data[data == 0] <- NA
+
+boxplot(data$Hardness~data$Location, col=rainbow(4),
+        main = "Total hardness at each location in the treatment train",
+           xlab = "Location",
+           ylab = "Hardness (mg/l CaCO3)")
+
+```
+
+This plots all locations hardness over time.
+
+```{r hardness over time}
+
+ggplot() + 
+  geom_point(data = basin2, aes(x=Collection.Date.Time, y = Hardness, color='Basin 2')) +
+    geom_point(data = basin3, aes(x=Collection.Date.Time, y = Hardness, color='Basin 3')) +
+    geom_point(data = basin4, aes(x=Collection.Date.Time, y = Hardness, color='Basin 4')) +
+    geom_point(data = basin5, aes(x=Collection.Date.Time, y = Hardness, color='Basin 5')) +
+    geom_point(data = raw_water, aes(x=Collection.Date.Time, y = Total.Hardness, color='Raw')) +
+    scale_colour_manual("", 
+                      breaks = c("Basin 2", "Basin 3", "Basin 4", "Basin 5", "Raw"),
+                      values = c("red", "green", "blue", "purple", "orange")) +
+  ylim(50, 450)+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "6 months")+
+  xlab('Date') +
+  ylab('Hardness (mg/l CaCO3)') +
+  ggtitle('Hardness over time for all basins')
+
+
+
+```
+
+This plots the hardness removed by each basin over time. Also plots for each individual year.
+
+```{r difference of primary and secondary hardness}
+Basin_2 <- cbind.data.frame(as.Date(basin2$Collection.Date.Time, format = "%m/%d/%Y %H:%M") , basin2$Hardness)
+colnames(Basin_2) <- c("Date", "Hardness_B2")
+Basin_3 <- cbind.data.frame(as.Date(basin3$Collection.Date.Time, format = "%m/%d/%Y %H:%M"), basin3$Hardness)
+colnames(Basin_3) <- c("Date", "Hardness_B3")
+Basin_4 <- cbind.data.frame(as.Date(basin4$Collection.Date.Time, format = "%m/%d/%Y %H:%M"), basin4$Hardness)
+colnames(Basin_4) <- c("Date", "Hardness_B4")
+Basin_5 <- cbind.data.frame(as.Date(basin5$Collection.Date.Time, format = "%m/%d/%Y %H:%M"), basin5$Hardness)
+colnames(Basin_5) <- c("Date", "Hardness_B5")
+Raw <- cbind.data.frame(as.POSIXct(raw_water$Collection.Date.Time,format = "%m/%d/%Y %H:%M"), raw_water$Total.Hardness)
+colnames(Raw) <- c("Date", "Hardness_R")
+
+data1 <- left_join(Basin_2, Basin_3, by = "Date")
+data2 <- left_join(Basin_4, Basin_5, by = "Date")
+data3 <- left_join(Basin_2, Raw, by = "Date")
+data4 <- left_join(Basin_3, Raw, by = "Date")
+data1[data1 == 0] <- NA
+data2[data2 == 0] <- NA
+data3[data3 == 0] <- NA
+data4[data4 == 0] <- NA
+data1 <- data1[complete.cases(data1), ]
+data2 <- data2[complete.cases(data2), ]
+data3 <- data3[complete.cases(data3), ]
+data4 <- data4[complete.cases(data4), ]
+
+data1$Difference <- data1$Hardness_B2 - data1$Hardness_B3
+data2$Difference <- data2$Hardness_B4 - data2$Hardness_B5
+data3$Difference <- data3$Hardness_R - data3$Hardness_B2
+data4$Difference <- data4$Hardness_R - data4$Hardness_B3
+
+data1$Date <- as.POSIXct(data1$Date)
+data2$Date <- as.POSIXct(data2$Date)
+data3$Date <- as.POSIXct(data3$Date)
+data4$Date <- as.POSIXct(data4$Date)
+
+####################################################################################################
+ggplot() + 
+  geom_point(data = data1, aes(x = Date, y = Difference, color = "Basin 2 - Basin 3")) +
+  geom_point(data = data2, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  geom_point(data = data3, aes(x = Date, y = Difference, color = "Raw - Basin 2")) +
+  geom_point(data = data4, aes(x = Date, y = Difference, color = "Raw - Basin 3")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 2 - Basin 3", "Basin 4 - Basin 5" ,"Raw - Basin 2", "Raw - Basin 3" ),
+                      values = c("red", "green", "blue", "purple")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "6 months")+
+  xlab('Date') +
+  ylab('Hardness (mg/l CaCO3')+
+  ggtitle('Differences of hardness')
+####################################################################################################
+ggplot() + 
+  geom_point(data = data1, aes(x = Date, y = Difference, color = "Basin 2 - Basin 3")) +
+  geom_point(data = data2, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  geom_point(data = data3, aes(x = Date, y = Difference, color = "Raw - Basin 2")) +
+  geom_point(data = data4, aes(x = Date, y = Difference, color = "Raw - Basin 3")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 2 - Basin 3", "Basin 4 - Basin 5" ,"Raw - Basin 2", "Raw - Basin 3" ),
+                      values = c("red", "green", "blue", "purple")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "1 month")+
+  xlab('Date') +
+  ylab('Hardness (mg/l CaCO3')+
+  ggtitle('Differences of hardness in 2018')+
+  xlim(as.POSIXct('2018-01-01'),as.POSIXct('2019-01-01'))
+#####################################################################################################
+ggplot() + 
+  geom_point(data = data1, aes(x = Date, y = Difference, color = "Basin 2 - Basin 3")) +
+  geom_point(data = data2, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  geom_point(data = data3, aes(x = Date, y = Difference, color = "Raw - Basin 2")) +
+  geom_point(data = data4, aes(x = Date, y = Difference, color = "Raw - Basin 3")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 2 - Basin 3", "Basin 4 - Basin 5" ,"Raw - Basin 2", "Raw - Basin 3" ),
+                      values = c("red", "green", "blue", "purple")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "1 month")+
+  xlab('Date') +
+  ylab('Hardness (mg/l CaCO3')+
+  ggtitle('Differences of hardness in 2019')+
+  xlim(as.POSIXct('2019-01-01'),as.POSIXct('2020-01-01'))
+#####################################################################################################
+ggplot() + 
+  geom_point(data = data1, aes(x = Date, y = Difference, color = "Basin 2 - Basin 3")) +
+  geom_point(data = data2, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  geom_point(data = data3, aes(x = Date, y = Difference, color = "Raw - Basin 2")) +
+  geom_point(data = data4, aes(x = Date, y = Difference, color = "Raw - Basin 3")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 2 - Basin 3", "Basin 4 - Basin 5" ,"Raw - Basin 2", "Raw - Basin 3" ),
+                      values = c("red", "green", "blue", "purple")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "1 month")+
+  xlab('Date') +
+  ylab('Hardness (mg/l CaCO3')+
+  ggtitle('Differences of hardness in 2020')+
+  xlim(as.POSIXct('2020-01-01'),as.POSIXct('2021-01-01'))
+#####################################################################################################
+ggplot() + 
+  geom_point(data = data1, aes(x = Date, y = Difference, color = "Basin 2 - Basin 3")) +
+  geom_point(data = data2, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  geom_point(data = data3, aes(x = Date, y = Difference, color = "Raw - Basin 2")) +
+  geom_point(data = data4, aes(x = Date, y = Difference, color = "Raw - Basin 3")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 2 - Basin 3", "Basin 4 - Basin 5" ,"Raw - Basin 2", "Raw - Basin 3" ),
+                      values = c("red", "green", "blue", "purple")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "1 month")+
+  xlab('Date') +
+  ylab('Hardness (mg/l CaCO3')+
+  ggtitle('Differences of hardness in 2021')+
+  xlim(as.POSIXct('2021-01-01'),as.POSIXct('2021-07-01'))
+#####################################################################################################
+
+```
+
+This plots the difference in hardness between basin 5 and 4, the alkalinity of both basins, the pH of both basins, and the temperature of the reservoir. Also plots for each individual year.
+
+
+```{r differences by year}
+
+
+data2.bel10 <- subset(data2, Difference < 10)
+reservoir$TEMP_C <- as.numeric(reservoir$TEMP_C)
+reservoir_T <- cbind.data.frame(as.POSIXct(reservoir$Collection.Date.Time, format = "%m/%d/%Y %H:%M") , reservoir$TEMP_C)
+reservoir_T[reservoir_T == 0] <- NA
+basin4[basin4 == 0] <- NA
+basin5[basin5 == 0] <- NA
+colnames(reservoir_T) <- c("Date", "Temp")
+##################################################################################################### All data
+plot1 <- ggplot() + 
+  geom_point(data = data2.bel10, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+
+  geom_point(data = reservoir_T, aes(x = Date, y = Temp, color = "Reservoir temperature")) +
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 4 alkalinity")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 5 alkalinity")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4 - Basin 5", "Reservoir temperature", "Basin 4 alkalinity", "Basin 5 alkalinity" ),
+                      values = c("red", "purple", "orange", "yellow")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ylim(-50, 175)+
+  ggtitle('Differences of hardness against pH, alkalinity, and temperature')
+
+plot2 <- ggplot() + 
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = PH, color = "Basin 4")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = PH, color = "Basin 5")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4", "Basin 5"),
+                      values = c("red","blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "6 months")+
+  xlab('Date') +
+  ylab('pH')+
+  ylim(9,12.5)+
+  ggtitle('pH over time')
+
+plot1/plot2
+##################################################################################################### For 2018
+plot1 <- ggplot() + 
+  geom_point(data = data2.bel10, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+
+  geom_point(data = reservoir_T, aes(x = Date, y = Temp, color = "Reservoir temperature")) +
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 4 alkalinity")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 5 alkalinity")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4 - Basin 5", "Reservoir temperature", "Basin 4 alkalinity", "Basin 5 alkalinity" ),
+                      values = c("red", "purple", "orange", "yellow")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ##scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ggtitle('Differences of hardness against pH, alkalinity, and temperature in 2018')+
+  ylim(-50, 175)+
+  xlim(as.POSIXct('2018-01-01'),as.POSIXct('2019-01-01'))
+
+plot2 <- ggplot() + 
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = PH, color = "Basin 4")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = PH, color = "Basin 5")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4", "Basin 5"),
+                      values = c("red","blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ##scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ylab('pH')+
+  ylim(9,12.5)+
+  ggtitle('pH over time')+
+  xlim(as.POSIXct('2018-01-01'),as.POSIXct('2019-01-01'))
+
+plot1/plot2
+##################################################################################################### For 2019
+plot1 <- ggplot() + 
+  geom_point(data = data2.bel10, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+
+  geom_point(data = reservoir_T, aes(x = Date, y = Temp, color = "Reservoir temperature")) +
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 4 alkalinity")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 5 alkalinity")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4 - Basin 5", "Reservoir temperature", "Basin 4 alkalinity", "Basin 5 alkalinity" ),
+                      values = c("red", "purple", "orange", "yellow")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ##scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ggtitle('Differences of hardness against pH, alkalinity, and temperature in 2019')+
+  ylim(-50, 175)+
+  xlim(as.POSIXct('2019-01-01'),as.POSIXct('2020-01-01'))
+
+plot2 <- ggplot() + 
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = PH, color = "Basin 4")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = PH, color = "Basin 5")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4", "Basin 5"),
+                      values = c("red","blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ##scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ylab('pH')+
+  ylim(9,12.5)+
+  ggtitle('pH over time')+
+  xlim(as.POSIXct('2019-01-01'),as.POSIXct('2020-01-01'))
+
+plot1/plot2
+##################################################################################################### For 2020
+plot1 <- ggplot() + 
+  geom_point(data = data2.bel10, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+
+  geom_point(data = reservoir_T, aes(x = Date, y = Temp, color = "Reservoir temperature")) +
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 4 alkalinity")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 5 alkalinity")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4 - Basin 5", "Reservoir temperature", "Basin 4 alkalinity", "Basin 5 alkalinity" ),
+                      values = c("red", "purple", "orange", "yellow")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+ ## scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ggtitle('Differences of hardness against pH, alkalinity, and temperature in 2020')+
+  ylim(-50, 175)+
+  xlim(as.POSIXct('2020-01-01'),as.POSIXct('2021-01-01'))
+
+plot2 <- ggplot() + 
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = PH, color = "Basin 4")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = PH, color = "Basin 5")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4", "Basin 5"),
+                      values = c("red","blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ##scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ylab('pH')+
+  ylim(9,12.5)+
+  ggtitle('pH over time')+
+  xlim(as.POSIXct('2020-01-01'),as.POSIXct('2021-01-01'))
+
+plot1/plot2
+#####################################################################################################for 2021
+plot1 <- ggplot() + 
+  geom_point(data = data2.bel10, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  geom_point(data = reservoir_T, aes(x = Date, y = Temp, color = "Reservoir temperature")) +
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 4 alkalinity")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 5 alkalinity")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4 - Basin 5", "Reservoir temperature", "Basin 4 alkalinity", "Basin 5 alkalinity" ),
+                      values = c("red", "purple", "orange", "yellow")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ##scale_y_continuous(limits = c(-50,175), name = "mg/l CaCO3", sec.axis = sec_axis(~./14.29, name = "pH")) +
+  ##scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ylim(-50, 175)+
+  ggtitle('Differences of hardness against pH, alkalinity, and temperature in 2021')+
+  xlim(as.POSIXct('2021-01-01'),as.POSIXct('2021-07-01'))
+
+plot2 <- ggplot() + 
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = PH, color = "Basin 4")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = PH, color = "Basin 5")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 4", "Basin 5"),
+                      values = c("red","blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ##scale_x_datetime(date_breaks = "3 months")+
+  xlab('Date') +
+  ylab('pH')+
+  ylim(9,12.5)+
+  ggtitle('pH over time')+
+  xlim(as.POSIXct('2021-01-01'),as.POSIXct('2021-07-01'))
+
+plot1/plot2
+###################################################################################
+
+Jan <- subset(data2, format.Date(Date, "%m")=="01")
+Jan$Date <- "Jan"
+Feb <- subset(data2, format.Date(Date, "%m")=="02")
+Feb$Date <- "Feb"
+Mar <- subset(data2, format.Date(Date, "%m")=="03")
+Mar$Date <- "Mar"
+Apr <- subset(data2, format.Date(Date, "%m")=="04")
+Apr$Date <- "Apr"
+May <- subset(data2, format.Date(Date, "%m")=="05")
+May$Date <- "May"
+Jun <- subset(data2, format.Date(Date, "%m")=="06")
+Jun$Date <- "Jun"
+Jul <- subset(data2, format.Date(Date, "%m")=="07")
+Jul$Date <- "Jul"
+Aug <- subset(data2, format.Date(Date, "%m")=="08")
+Aug$Date <- "Aug"
+Sep <- subset(data2, format.Date(Date, "%m")=="09")
+Sep$Date <- "Sep"
+Oct <- subset(data2, format.Date(Date, "%m")=="10")
+Oct$Date <- "Oct"
+Nov <- subset(data2, format.Date(Date, "%m")=="11")
+Nov$Date <- "Nov"
+Dec <- subset(data2, format.Date(Date, "%m")=="12")
+Dec$Date <- "Dec"
+
+month.list <- list(Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec)
+month.data<- bind_rows(month.list, .id = "column_label")
+month.data$Date <- factor(month.data$Date, c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))
+boxplot(month.data$Difference~month.data$Date, col=rainbow(4),
+        main = "Difference in total hardness from basin 5 - basin 4",
+           xlab = "Month",
+           ylab = "Hardness (mg/l CaCO3)")
+
+
+Jan <- subset(data2, format.Date(Date, "%m")=="01")
+Feb <- subset(data2, format.Date(Date, "%m")=="02")
+Mar <- subset(data2, format.Date(Date, "%m")=="03")
+Apr <- subset(data2, format.Date(Date, "%m")=="04")
+May <- subset(data2, format.Date(Date, "%m")=="05")
+Jun <- subset(data2, format.Date(Date, "%m")=="06")
+Jul <- subset(data2, format.Date(Date, "%m")=="07")
+Aug <- subset(data2, format.Date(Date, "%m")=="08")
+Sep <- subset(data2, format.Date(Date, "%m")=="09")
+Oct <- subset(data2, format.Date(Date, "%m")=="10")
+Nov <- subset(data2, format.Date(Date, "%m")=="11")
+Dec <- subset(data2, format.Date(Date, "%m")=="12")
+
+plot1 <- ggplot() + 
+  geom_point(data = Jan, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in Janurary')
+
+plot2 <- ggplot() + 
+  geom_point(data = Feb, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in February')
+
+plot3 <- ggplot() + 
+  geom_point(data = Mar, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in March')
+
+plot4 <- ggplot() + 
+  geom_point(data = Apr, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in April')
+
+plot5 <- ggplot() + 
+  geom_point(data = May, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in May')
+
+plot6 <- ggplot() + 
+  geom_point(data = Jun, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in June')
+
+plot7 <- ggplot() + 
+  geom_point(data = Jul, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in July')
+
+plot8 <- ggplot() + 
+  geom_point(data = Aug, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in August')
+
+plot9 <- ggplot() + 
+  geom_point(data = Sep, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in September')
+
+plot10 <- ggplot() + 
+  geom_point(data = Oct, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in October')
+
+plot11 <- ggplot() + 
+  geom_point(data = Nov, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in November')
+
+plot12 <- ggplot() + 
+  geom_point(data = Dec, aes(x = Date, y = Difference, color = "Basin 4 - Basin 5")) +
+  scale_colour_manual("", breaks = c("Basin 4 - Basin 5"), values = c("blue")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab('Date') + ggtitle('Differences of hardness over time in December')
+plot.list <- c(plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8, plot9, plot10, plot11, plot12)
+
+(plot1/plot2/plot3)
+(plot4/plot5/plot6)
+(plot7/plot8/plot9)
+(plot10/plot11/plot12)
+
+```
+Plots the alkalinity of all basins over time.
+
+```{r Alkalinity over time}
+
+ggplot() + 
+  geom_point(data = basin2, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 2")) +
+  geom_point(data = basin3, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 3")) +
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 4")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Basin 5")) +
+  geom_point(data = reservoir, aes(x = Collection.Date.Time, y = ALK_TOTAL, color = "Reservoir")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 2", "Basin 3" ,"Basin 4", "Basin 5", "Reservoir" ),
+                      values = c("red", "green", "blue", "purple", "orange")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "6 months")+
+  xlab('Date') +
+  ylab('Alkalinity (mg/l CaCO3')+
+  ylim(10, 350)+
+  ggtitle('Alkalinity over time')
+
+
+```
+
+Plots the pH of allocations over time.
+
+```{r pH over time}
+ggplot() + 
+  geom_point(data = basin2, aes(x = Collection.Date.Time, y = PH, color = "Basin 2")) +
+  geom_point(data = basin3, aes(x = Collection.Date.Time, y = PH, color = "Basin 3")) +
+  geom_point(data = basin4, aes(x = Collection.Date.Time, y = PH, color = "Basin 4")) +
+  geom_point(data = basin5, aes(x = Collection.Date.Time, y = PH, color = "Basin 5")) +
+  geom_point(data = reservoir, aes(x = Collection.Date.Time, y = PH, color = "Reservoir")) +
+  geom_point(data = raw_water, aes(x = Collection.Date.Time, y = pH, color = "Raw")) +
+  scale_colour_manual("", 
+                      breaks = c("Basin 2", "Basin 3" ,"Basin 4", "Basin 5", "Reservoir", "Raw" ),
+                      values = c("red", "green", "blue", "purple", "orange", "yellow")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  scale_x_datetime(date_breaks = "6 months")+
+  xlab('Date') +
+  ylab('pH')+
+  ylim(5,12.5)+
+  ggtitle('pH over time')
+  
+```
